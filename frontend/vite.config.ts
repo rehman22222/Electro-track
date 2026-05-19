@@ -1,8 +1,18 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { componentTagger } from "lovable-tagger";
 import { VitePWA } from 'vite-plugin-pwa';
+
+function getDevApiTarget(mode: string) {
+  const env = loadEnv(mode, process.cwd(), "");
+  const configuredTarget = env.VITE_DEV_API_TARGET || "http://localhost:5000";
+
+  return configuredTarget
+    .trim()
+    .replace(/\/api\/?$/, "")
+    .replace(/\/+$/, "");
+}
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
@@ -12,7 +22,7 @@ export default defineConfig(({ mode }) => ({
     allowedHosts: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
+        target: getDevApiTarget(mode),
         changeOrigin: true,
       },
     },

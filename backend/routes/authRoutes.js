@@ -9,7 +9,7 @@ const auth = require("../middleware/auth");
 const User = require("../models/User");
 const Area = require("../models/Area");
 const Outage = require("../models/Outage");
-const { createOtpCode, hashOtp, sendVerificationOtpEmail } = require("../utils/emailOtp");
+const { EmailDeliveryError, createOtpCode, hashOtp, sendVerificationOtpEmail } = require("../utils/emailOtp");
 
 const PREMIUM_ROLES = new Set(["premium", "admin"]);
 
@@ -95,6 +95,14 @@ async function persistAndSendVerificationOtp(user) {
     name: user.username,
     otp,
   });
+}
+
+function handleAuthRouteError(res, err) {
+  if (err instanceof EmailDeliveryError || err.name === "EmailDeliveryError") {
+    return res.status(err.status || 503).json({ message: err.message });
+  }
+
+  return res.status(500).json({ message: "Server error", error: err.message });
 }
 
 function comparableName(value) {
@@ -228,7 +236,7 @@ router.post("/register", async (req, res) => {
       ...(emailDispatch.devOtpPreview ? { devOtpPreview: emailDispatch.devOtpPreview } : {}),
     });
   } catch (err) {
-    return res.status(500).json({ message: "Server error", error: err.message });
+    return handleAuthRouteError(res, err);
   }
 });
 
@@ -284,7 +292,7 @@ router.post("/verify-email-otp", async (req, res) => {
       token,
     });
   } catch (err) {
-    return res.status(500).json({ message: "Server error", error: err.message });
+    return handleAuthRouteError(res, err);
   }
 });
 
@@ -315,7 +323,7 @@ router.post("/resend-email-otp", async (req, res) => {
       ...(emailDispatch.devOtpPreview ? { devOtpPreview: emailDispatch.devOtpPreview } : {}),
     });
   } catch (err) {
-    return res.status(500).json({ message: "Server error", error: err.message });
+    return handleAuthRouteError(res, err);
   }
 });
 
