@@ -74,6 +74,13 @@ function normalizePhoneNumber(value) {
   return String(value || "").replace(/[^\d+]/g, "").trim();
 }
 
+function maskEmail(value) {
+  const [localPart, domain] = String(value || "").split("@");
+  if (!localPart || !domain) return "unknown email";
+
+  return `${localPart.slice(0, 2)}***@${domain}`;
+}
+
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(value));
 }
@@ -90,11 +97,15 @@ async function persistAndSendVerificationOtp(user) {
   user.emailVerificationOtpSentAt = new Date();
   await user.save();
 
-  return sendVerificationOtpEmail({
+  const dispatch = await sendVerificationOtpEmail({
     to: user.email,
     name: user.username,
     otp,
   });
+
+  console.log(`Verification OTP email accepted by ${dispatch.provider || "email provider"} for ${maskEmail(user.email)}`);
+
+  return dispatch;
 }
 
 function handleAuthRouteError(res, err) {

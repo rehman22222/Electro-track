@@ -47,6 +47,7 @@ export default function Register() {
           email: data.email,
           devOtpPreview: data.devOtpPreview,
         });
+        setOtp('');
         toast.success('Verification code sent to your email.');
         return;
       }
@@ -85,6 +86,7 @@ export default function Register() {
             }
           : current
       );
+      setOtp('');
       toast.success(data.message || 'A new code has been sent.');
     },
     onError: (error: unknown) => {

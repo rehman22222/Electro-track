@@ -26,6 +26,9 @@ function getEmailConfig() {
   const resendApiKey = String(process.env.RESEND_API_KEY || "").trim();
   const sendgridApiKey = String(process.env.SENDGRID_API_KEY || "").trim();
   const brevoApiKey = String(process.env.BREVO_API_KEY || "").trim();
+  const brevoSmtpLogin = String(process.env.BREVO_SMTP_LOGIN || "").trim();
+  const brevoSmtpKey = String(process.env.BREVO_SMTP_KEY || "").replace(/\s+/g, "");
+  const brevoSmtpPort = Number(process.env.BREVO_SMTP_PORT || 2525);
   const fromEmail = process.env.SMTP_FROM_EMAIL || smtpUser || "no-reply@powertrack.local";
   const resendFromEmail = process.env.RESEND_FROM_EMAIL || fromEmail;
   const sendgridFromEmail = process.env.SENDGRID_FROM_EMAIL || fromEmail;
@@ -41,6 +44,9 @@ function getEmailConfig() {
     resendApiKey,
     sendgridApiKey,
     brevoApiKey,
+    brevoSmtpLogin,
+    brevoSmtpKey,
+    brevoSmtpPort,
     fromEmail,
     resendFromEmail,
     sendgridFromEmail,
@@ -51,6 +57,10 @@ function getEmailConfig() {
 
 function hasSmtpConfig(config) {
   return Boolean(config.smtpHost && config.smtpUser && config.smtpPass);
+}
+
+function hasBrevoSmtpConfig(config) {
+  return Boolean(config.brevoSmtpLogin && config.brevoSmtpKey);
 }
 
 function getPublicEmailError(details = []) {
@@ -169,6 +179,43 @@ async function sendWithBrevo(config, message) {
   };
 }
 
+async function sendWithBrevoSmtp(config, message) {
+  let nodemailer;
+  try {
+    nodemailer = require("nodemailer");
+  } catch (error) {
+    throw new Error("nodemailer is not installed.");
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: "smtp-relay.brevo.com",
+    port: config.brevoSmtpPort,
+    secure: false,
+    requireTLS: true,
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
+    auth: {
+      user: config.brevoSmtpLogin,
+      pass: config.brevoSmtpKey,
+    },
+  });
+
+  await transporter.sendMail({
+    from: `"${config.fromName}" <${config.brevoFromEmail}>`,
+    to: message.to,
+    subject: message.subject,
+    html: message.html,
+    text: message.text,
+  });
+
+  return {
+    delivered: true,
+    preview: false,
+    provider: "brevo-smtp",
+  };
+}
+
 async function sendWithSmtp(config, message) {
   let nodemailer;
   try {
@@ -245,6 +292,15 @@ async function sendVerificationOtpEmail({ to, name, otp }) {
     }
   }
 
+  if (hasBrevoSmtpConfig(config)) {
+    try {
+      return await sendWithBrevoSmtp(config, message);
+    } catch (error) {
+      failures.push(error.message);
+      console.error(`Brevo SMTP verification email failed for ${to}: ${error.message}`);
+    }
+  }
+
   if (config.resendApiKey) {
     try {
       return await sendWithResend(config, message);
@@ -263,9 +319,9 @@ async function sendVerificationOtpEmail({ to, name, otp }) {
     }
   }
 
-  if (!config.sendgridApiKey && !config.brevoApiKey && !config.resendApiKey && (!hasSmtpConfig(config) || process.env.EMAIL_DISABLE_SMTP === "true")) {
+  if (!config.sendgridApiKey && !config.brevoApiKey && !hasBrevoSmtpConfig(config) && !config.resendApiKey && (!hasSmtpConfig(config) || process.env.EMAIL_DISABLE_SMTP === "true")) {
     if (process.env.NODE_ENV === "production") {
-      failures.push("Email is not configured. Set SENDGRID_API_KEY, BREVO_API_KEY, RESEND_API_KEY, or SMTP_HOST, SMTP_USER, and SMTP_PASS.");
+      failures.push("Email is not configured. Set SENDGRID_API_KEY, BREVO_API_KEY, BREVO_SMTP_LOGIN and BREVO_SMTP_KEY, RESEND_API_KEY, or SMTP_HOST, SMTP_USER, and SMTP_PASS.");
       throw new EmailDeliveryError(getPublicEmailError(failures), failures);
     }
 
