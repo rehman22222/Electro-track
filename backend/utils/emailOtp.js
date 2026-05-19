@@ -283,21 +283,21 @@ async function sendVerificationOtpEmail({ to, name, otp }) {
     }
   }
 
-  if (config.brevoApiKey) {
-    try {
-      return await sendWithBrevo(config, message);
-    } catch (error) {
-      failures.push(error.message);
-      console.error(`Brevo verification email failed for ${to}: ${error.message}`);
-    }
-  }
-
   if (hasBrevoSmtpConfig(config)) {
     try {
       return await sendWithBrevoSmtp(config, message);
     } catch (error) {
       failures.push(error.message);
       console.error(`Brevo SMTP verification email failed for ${to}: ${error.message}`);
+    }
+  }
+
+  if (config.brevoApiKey) {
+    try {
+      return await sendWithBrevo(config, message);
+    } catch (error) {
+      failures.push(error.message);
+      console.error(`Brevo verification email failed for ${to}: ${error.message}`);
     }
   }
 
