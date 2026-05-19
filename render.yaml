@@ -23,11 +23,11 @@ services:
       - key: SMTP_SECURE
         value: false
       - key: SMTP_USER
-        sync: false
+        value: powertracksmart@gmail.com
       - key: SMTP_PASS
         sync: false
       - key: SMTP_FROM_EMAIL
-        sync: false
+        value: powertracksmart@gmail.com
       - key: SMTP_FROM_NAME
         value: PowerTrack
       - key: RESEND_API_KEY
