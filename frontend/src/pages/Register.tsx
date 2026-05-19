@@ -23,6 +23,7 @@ type RegisterFormState = {
 
 type PendingVerificationState = {
   email: string;
+  otpDelivery?: 'email' | 'screen';
   devOtpPreview?: string;
 };
 
@@ -45,9 +46,14 @@ export default function Register() {
       if ('requiresVerification' in data && data.requiresVerification) {
         setPendingVerification({
           email: data.email,
+          otpDelivery: data.otpDelivery,
           devOtpPreview: data.devOtpPreview,
         });
-        toast.success('Verification code sent to your email.');
+        toast.success(
+          data.otpDelivery === 'screen' || data.devOtpPreview
+            ? 'Verification code is shown below.'
+            : 'Verification code sent to your email.'
+        );
         return;
       }
 
@@ -81,6 +87,7 @@ export default function Register() {
         current
           ? {
               ...current,
+              otpDelivery: data.otpDelivery,
               devOtpPreview: data.devOtpPreview,
             }
           : current
@@ -165,7 +172,9 @@ export default function Register() {
               <CardTitle className="text-2xl sm:text-3xl">{pendingVerification ? 'Verify your email' : 'Create account'}</CardTitle>
               <CardDescription className="text-sm sm:text-base">
                 {pendingVerification
-                  ? `Enter the 6-digit code sent to ${pendingVerification.email}.`
+                  ? pendingVerification.otpDelivery === 'screen' || pendingVerification.devOtpPreview
+                    ? `Enter the 6-digit code shown below for ${pendingVerification.email}.`
+                    : `Enter the 6-digit code sent to ${pendingVerification.email}.`
                   : 'Set up your account with your name, email, phone number, and password.'}
               </CardDescription>
             </CardHeader>
@@ -259,10 +268,12 @@ export default function Register() {
               ) : (
                 <form onSubmit={handleVerifySubmit} className="space-y-5">
                   <div className="rounded-lg border border-border bg-secondary/40 p-4 text-sm text-muted-foreground">
-                    Check your inbox for the verification code. It expires in 10 minutes.
+                    {pendingVerification.otpDelivery === 'screen' || pendingVerification.devOtpPreview
+                      ? 'Email delivery is temporarily unavailable. Use this verification code to finish creating your account.'
+                      : 'Check your inbox for the verification code. It expires in 10 minutes.'}
                     {pendingVerification.devOtpPreview && (
                       <p className="mt-3 text-primary">
-                        Dev preview code: <span className="font-semibold">{pendingVerification.devOtpPreview}</span>
+                        Verification code: <span className="font-semibold">{pendingVerification.devOtpPreview}</span>
                       </p>
                     )}
                   </div>
