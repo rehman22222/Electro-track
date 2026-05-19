@@ -30,6 +30,14 @@ services:
         value: powertracksmart@gmail.com
       - key: SMTP_FROM_NAME
         value: PowerTrack
+      - key: GMAIL_CLIENT_ID
+        sync: false
+      - key: GMAIL_CLIENT_SECRET
+        sync: false
+      - key: GMAIL_REFRESH_TOKEN
+        sync: false
+      - key: GMAIL_FROM_EMAIL
+        value: powertracksmart@gmail.com
       - key: SENDGRID_API_KEY
         sync: false
       - key: SENDGRID_FROM_EMAIL

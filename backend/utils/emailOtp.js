@@ -29,7 +29,11 @@ function getEmailConfig() {
   const brevoSmtpLogin = String(process.env.BREVO_SMTP_LOGIN || "").trim();
   const brevoSmtpKey = String(process.env.BREVO_SMTP_KEY || "").replace(/\s+/g, "");
   const brevoSmtpPort = Number(process.env.BREVO_SMTP_PORT || 2525);
+  const gmailClientId = String(process.env.GMAIL_CLIENT_ID || "").trim();
+  const gmailClientSecret = String(process.env.GMAIL_CLIENT_SECRET || "").trim();
+  const gmailRefreshToken = String(process.env.GMAIL_REFRESH_TOKEN || "").trim();
   const fromEmail = process.env.SMTP_FROM_EMAIL || smtpUser || "no-reply@powertrack.local";
+  const gmailFromEmail = process.env.GMAIL_FROM_EMAIL || fromEmail;
   const resendFromEmail = process.env.RESEND_FROM_EMAIL || fromEmail;
   const sendgridFromEmail = process.env.SENDGRID_FROM_EMAIL || fromEmail;
   const brevoFromEmail = process.env.BREVO_FROM_EMAIL || fromEmail;
@@ -47,7 +51,11 @@ function getEmailConfig() {
     brevoSmtpLogin,
     brevoSmtpKey,
     brevoSmtpPort,
+    gmailClientId,
+    gmailClientSecret,
+    gmailRefreshToken,
     fromEmail,
+    gmailFromEmail,
     resendFromEmail,
     sendgridFromEmail,
     brevoFromEmail,
@@ -61,6 +69,10 @@ function hasSmtpConfig(config) {
 
 function hasBrevoSmtpConfig(config) {
   return Boolean(config.brevoSmtpLogin && config.brevoSmtpKey);
+}
+
+function hasGmailApiConfig(config) {
+  return Boolean(config.gmailClientId && config.gmailClientSecret && config.gmailRefreshToken && config.gmailFromEmail);
 }
 
 function getPublicEmailError(details = []) {
@@ -93,6 +105,109 @@ function assertSmtpAccepted(info, provider) {
       `${provider} did not accept all recipients. accepted=${accepted.join(",") || "none"} rejected=${rejected.join(",") || "none"}`
     );
   }
+}
+
+function encodeMimeHeader(value) {
+  return String(value || "").replace(/[\r\n]/g, " ").trim();
+}
+
+function encodeBase64Url(value) {
+  return Buffer.from(value)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function createMimeMessage({ fromName, fromEmail, to, subject, text, html }) {
+  const boundary = `powertrack-${crypto.randomBytes(12).toString("hex")}`;
+  const fromLabel = encodeMimeHeader(fromName);
+  const cleanFromEmail = encodeMimeHeader(fromEmail);
+  const cleanTo = encodeMimeHeader(to);
+  const cleanSubject = encodeMimeHeader(subject);
+
+  return [
+    `From: ${fromLabel ? `"${fromLabel}" ` : ""}<${cleanFromEmail}>`,
+    `To: ${cleanTo}`,
+    `Subject: ${cleanSubject}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: 7bit",
+    "",
+    text,
+    "",
+    `--${boundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    "Content-Transfer-Encoding: 7bit",
+    "",
+    html,
+    "",
+    `--${boundary}--`,
+    "",
+  ].join("\r\n");
+}
+
+async function getGmailAccessToken(config) {
+  const fetch = require("node-fetch");
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      client_id: config.gmailClientId,
+      client_secret: config.gmailClientSecret,
+      refresh_token: config.gmailRefreshToken,
+      grant_type: "refresh_token",
+    }).toString(),
+  });
+
+  const data = await readProviderResponse(response);
+  if (!response.ok || !data.access_token) {
+    throw new Error(`Gmail token refresh failed (${response.status}): ${JSON.stringify(data)}`);
+  }
+
+  return data.access_token;
+}
+
+async function sendWithGmailApi(config, message) {
+  const fetch = require("node-fetch");
+  const accessToken = await getGmailAccessToken(config);
+  const raw = encodeBase64Url(
+    createMimeMessage({
+      fromName: config.fromName,
+      fromEmail: config.gmailFromEmail,
+      to: message.to,
+      subject: message.subject,
+      text: message.text,
+      html: message.html,
+    })
+  );
+
+  const response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ raw }),
+  });
+
+  const data = await readProviderResponse(response);
+  if (!response.ok) {
+    throw new Error(`Gmail API email failed (${response.status}): ${JSON.stringify(data)}`);
+  }
+
+  return {
+    delivered: true,
+    preview: false,
+    provider: "gmail-api",
+    providerMessageId: data.id,
+    threadId: data.threadId,
+  };
 }
 
 async function sendWithResend(config, message) {
@@ -295,6 +410,15 @@ async function sendEmailMessage(message) {
   const config = getEmailConfig();
   const failures = [];
 
+  if (hasGmailApiConfig(config)) {
+    try {
+      return await sendWithGmailApi(config, message);
+    } catch (error) {
+      failures.push(error.message);
+      console.error(`Gmail API email failed for ${message.to}: ${error.message}`);
+    }
+  }
+
   if (config.sendgridApiKey) {
     try {
       return await sendWithSendGrid(config, message);
@@ -340,9 +464,9 @@ async function sendEmailMessage(message) {
     }
   }
 
-  if (!config.sendgridApiKey && !config.brevoApiKey && !hasBrevoSmtpConfig(config) && !config.resendApiKey && (!hasSmtpConfig(config) || process.env.EMAIL_DISABLE_SMTP === "true")) {
+  if (!hasGmailApiConfig(config) && !config.sendgridApiKey && !config.brevoApiKey && !hasBrevoSmtpConfig(config) && !config.resendApiKey && (!hasSmtpConfig(config) || process.env.EMAIL_DISABLE_SMTP === "true")) {
     if (process.env.NODE_ENV === "production") {
-      failures.push("Email is not configured. Set SENDGRID_API_KEY, BREVO_API_KEY, BREVO_SMTP_LOGIN and BREVO_SMTP_KEY, RESEND_API_KEY, or SMTP_HOST, SMTP_USER, and SMTP_PASS.");
+      failures.push("Email is not configured. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN; or SENDGRID_API_KEY, BREVO_API_KEY, BREVO_SMTP_LOGIN and BREVO_SMTP_KEY, RESEND_API_KEY, or SMTP_HOST, SMTP_USER, and SMTP_PASS.");
       throw new EmailDeliveryError(getPublicEmailError(failures), failures);
     }
 
