@@ -73,6 +73,28 @@ function getPublicEmailError(details = []) {
   return `Could not send the verification email.${providerDetails}`;
 }
 
+async function readProviderResponse(response) {
+  const rawBody = await response.text();
+  if (!rawBody) return {};
+
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    return { rawBody };
+  }
+}
+
+function assertSmtpAccepted(info, provider) {
+  const accepted = Array.isArray(info.accepted) ? info.accepted : [];
+  const rejected = Array.isArray(info.rejected) ? info.rejected : [];
+
+  if (!accepted.length || rejected.length) {
+    throw new Error(
+      `${provider} did not accept all recipients. accepted=${accepted.join(",") || "none"} rejected=${rejected.join(",") || "none"}`
+    );
+  }
+}
+
 async function sendWithResend(config, message) {
   const fetch = require("node-fetch");
   const response = await fetch("https://api.resend.com/emails", {
@@ -92,14 +114,16 @@ async function sendWithResend(config, message) {
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Resend email failed (${response.status}): ${errorBody}`);
+    const errorBody = await readProviderResponse(response);
+    throw new Error(`Resend email failed (${response.status}): ${JSON.stringify(errorBody)}`);
   }
 
+  const data = await readProviderResponse(response);
   return {
     delivered: true,
     preview: false,
     provider: "resend",
+    providerMessageId: data.id,
   };
 }
 
@@ -136,14 +160,15 @@ async function sendWithSendGrid(config, message) {
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`SendGrid email failed (${response.status}): ${errorBody}`);
+    const errorBody = await readProviderResponse(response);
+    throw new Error(`SendGrid email failed (${response.status}): ${JSON.stringify(errorBody)}`);
   }
 
   return {
     delivered: true,
     preview: false,
     provider: "sendgrid",
+    providerMessageId: response.headers.get("x-message-id") || undefined,
   };
 }
 
@@ -168,14 +193,16 @@ async function sendWithBrevo(config, message) {
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Brevo email failed (${response.status}): ${errorBody}`);
+    const errorBody = await readProviderResponse(response);
+    throw new Error(`Brevo email failed (${response.status}): ${JSON.stringify(errorBody)}`);
   }
 
+  const data = await readProviderResponse(response);
   return {
     delivered: true,
     preview: false,
     provider: "brevo",
+    providerMessageId: data.messageId,
   };
 }
 
@@ -201,18 +228,23 @@ async function sendWithBrevoSmtp(config, message) {
     },
   });
 
-  await transporter.sendMail({
+  const info = await transporter.sendMail({
     from: `"${config.fromName}" <${config.brevoFromEmail}>`,
     to: message.to,
     subject: message.subject,
     html: message.html,
     text: message.text,
   });
+  assertSmtpAccepted(info, "Brevo SMTP");
 
   return {
     delivered: true,
     preview: false,
     provider: "brevo-smtp",
+    providerMessageId: info.messageId,
+    accepted: info.accepted,
+    rejected: info.rejected,
+    response: info.response,
   };
 }
 
@@ -239,24 +271,93 @@ async function sendWithSmtp(config, message) {
     },
   });
 
-  await transporter.sendMail({
+  const info = await transporter.sendMail({
     from: `"${config.fromName}" <${config.fromEmail}>`,
     to: message.to,
     subject: message.subject,
     html: message.html,
     text: message.text,
   });
+  assertSmtpAccepted(info, "SMTP");
 
   return {
     delivered: true,
     preview: false,
     provider: "smtp",
+    providerMessageId: info.messageId,
+    accepted: info.accepted,
+    rejected: info.rejected,
+    response: info.response,
   };
 }
 
-async function sendVerificationOtpEmail({ to, name, otp }) {
+async function sendEmailMessage(message) {
   const config = getEmailConfig();
+  const failures = [];
 
+  if (config.sendgridApiKey) {
+    try {
+      return await sendWithSendGrid(config, message);
+    } catch (error) {
+      failures.push(error.message);
+      console.error(`SendGrid email failed for ${message.to}: ${error.message}`);
+    }
+  }
+
+  if (hasBrevoSmtpConfig(config)) {
+    try {
+      return await sendWithBrevoSmtp(config, message);
+    } catch (error) {
+      failures.push(error.message);
+      console.error(`Brevo SMTP email failed for ${message.to}: ${error.message}`);
+    }
+  }
+
+  if (config.brevoApiKey) {
+    try {
+      return await sendWithBrevo(config, message);
+    } catch (error) {
+      failures.push(error.message);
+      console.error(`Brevo email failed for ${message.to}: ${error.message}`);
+    }
+  }
+
+  if (config.resendApiKey) {
+    try {
+      return await sendWithResend(config, message);
+    } catch (error) {
+      failures.push(error.message);
+      console.error(`Resend email failed for ${message.to}: ${error.message}`);
+    }
+  }
+
+  if (hasSmtpConfig(config) && process.env.EMAIL_DISABLE_SMTP !== "true") {
+    try {
+      return await sendWithSmtp(config, message);
+    } catch (error) {
+      failures.push(error.message);
+      console.error(`SMTP email failed for ${message.to}: ${error.message}`);
+    }
+  }
+
+  if (!config.sendgridApiKey && !config.brevoApiKey && !hasBrevoSmtpConfig(config) && !config.resendApiKey && (!hasSmtpConfig(config) || process.env.EMAIL_DISABLE_SMTP === "true")) {
+    if (process.env.NODE_ENV === "production") {
+      failures.push("Email is not configured. Set SENDGRID_API_KEY, BREVO_API_KEY, BREVO_SMTP_LOGIN and BREVO_SMTP_KEY, RESEND_API_KEY, or SMTP_HOST, SMTP_USER, and SMTP_PASS.");
+      throw new EmailDeliveryError(getPublicEmailError(failures), failures);
+    }
+
+    console.log(`[DEV EMAIL] ${message.subject} for ${message.to}`);
+    return {
+      delivered: false,
+      preview: true,
+      devOtpPreview: message.devOtpPreview,
+    };
+  }
+
+  throw new EmailDeliveryError(getPublicEmailError(failures), failures);
+}
+
+async function sendVerificationOtpEmail({ to, name, otp }) {
   const subject = "Your PowerTrack verification code";
   const text = `Your PowerTrack verification code is ${otp}. It expires in 10 minutes.`;
   const html = `
@@ -271,74 +372,34 @@ async function sendVerificationOtpEmail({ to, name, otp }) {
       <p>If you did not request this account, you can ignore this email.</p>
     </div>
   `;
-  const message = { to, subject, html, text };
-  const failures = [];
 
-  if (config.sendgridApiKey) {
-    try {
-      return await sendWithSendGrid(config, message);
-    } catch (error) {
-      failures.push(error.message);
-      console.error(`SendGrid verification email failed for ${to}: ${error.message}`);
-    }
-  }
+  return sendEmailMessage({
+    to,
+    subject,
+    html,
+    text,
+    devOtpPreview: process.env.NODE_ENV === "production" ? undefined : otp,
+  });
+}
 
-  if (hasBrevoSmtpConfig(config)) {
-    try {
-      return await sendWithBrevoSmtp(config, message);
-    } catch (error) {
-      failures.push(error.message);
-      console.error(`Brevo SMTP verification email failed for ${to}: ${error.message}`);
-    }
-  }
+async function sendEmailDeliveryTest({ to }) {
+  const subject = "PowerTrack email delivery test";
+  const text = "This is a PowerTrack email delivery test. If you received it, transactional email delivery is working.";
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #111827; line-height: 1.6;">
+      <h2 style="margin-bottom: 8px;">PowerTrack email delivery test</h2>
+      <p>This message confirms that transactional email delivery is working.</p>
+      <p>No action is required.</p>
+    </div>
+  `;
 
-  if (config.brevoApiKey) {
-    try {
-      return await sendWithBrevo(config, message);
-    } catch (error) {
-      failures.push(error.message);
-      console.error(`Brevo verification email failed for ${to}: ${error.message}`);
-    }
-  }
-
-  if (config.resendApiKey) {
-    try {
-      return await sendWithResend(config, message);
-    } catch (error) {
-      failures.push(error.message);
-      console.error(`Resend verification email failed for ${to}: ${error.message}`);
-    }
-  }
-
-  if (hasSmtpConfig(config) && process.env.EMAIL_DISABLE_SMTP !== "true") {
-    try {
-      return await sendWithSmtp(config, message);
-    } catch (error) {
-      failures.push(error.message);
-      console.error(`SMTP verification email failed for ${to}: ${error.message}`);
-    }
-  }
-
-  if (!config.sendgridApiKey && !config.brevoApiKey && !hasBrevoSmtpConfig(config) && !config.resendApiKey && (!hasSmtpConfig(config) || process.env.EMAIL_DISABLE_SMTP === "true")) {
-    if (process.env.NODE_ENV === "production") {
-      failures.push("Email is not configured. Set SENDGRID_API_KEY, BREVO_API_KEY, BREVO_SMTP_LOGIN and BREVO_SMTP_KEY, RESEND_API_KEY, or SMTP_HOST, SMTP_USER, and SMTP_PASS.");
-      throw new EmailDeliveryError(getPublicEmailError(failures), failures);
-    }
-
-    console.log(`[DEV OTP] Verification code for ${to}: ${otp}`);
-    return {
-      delivered: false,
-      preview: true,
-      devOtpPreview: process.env.NODE_ENV === "production" ? undefined : otp,
-    };
-  }
-
-  throw new EmailDeliveryError(getPublicEmailError(failures), failures);
+  return sendEmailMessage({ to, subject, html, text });
 }
 
 module.exports = {
   EmailDeliveryError,
   createOtpCode,
   hashOtp,
+  sendEmailDeliveryTest,
   sendVerificationOtpEmail,
 };

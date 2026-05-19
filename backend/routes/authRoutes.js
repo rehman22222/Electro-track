@@ -103,7 +103,11 @@ async function persistAndSendVerificationOtp(user) {
     otp,
   });
 
-  console.log(`Verification OTP email accepted by ${dispatch.provider || "email provider"} for ${maskEmail(user.email)}`);
+  console.log(
+    `Verification OTP email accepted by ${dispatch.provider || "email provider"} for ${maskEmail(user.email)}` +
+      `${dispatch.providerMessageId ? ` messageId=${dispatch.providerMessageId}` : ""}` +
+      `${dispatch.response ? ` response=${dispatch.response}` : ""}`
+  );
 
   return dispatch;
 }
