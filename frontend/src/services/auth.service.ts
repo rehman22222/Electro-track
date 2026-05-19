@@ -22,7 +22,6 @@ export interface VerificationPendingResponse {
   requiresVerification: true;
   email: string;
   message: string;
-  otpDelivery?: 'email' | 'screen';
   devOtpPreview?: string;
 }
 

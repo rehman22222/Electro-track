@@ -30,6 +30,16 @@ services:
         value: powertracksmart@gmail.com
       - key: SMTP_FROM_NAME
         value: PowerTrack
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: SENDGRID_FROM_EMAIL
+        value: powertracksmart@gmail.com
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_FROM_EMAIL
+        value: powertracksmart@gmail.com
+      - key: EMAIL_DISABLE_SMTP
+        value: true
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_FROM_EMAIL

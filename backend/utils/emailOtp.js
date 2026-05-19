@@ -24,8 +24,12 @@ function getEmailConfig() {
   const smtpPass = String(process.env.SMTP_PASS || "").replace(/\s+/g, "");
   const smtpSecure = String(process.env.SMTP_SECURE || "false").toLowerCase() === "true";
   const resendApiKey = String(process.env.RESEND_API_KEY || "").trim();
+  const sendgridApiKey = String(process.env.SENDGRID_API_KEY || "").trim();
+  const brevoApiKey = String(process.env.BREVO_API_KEY || "").trim();
   const fromEmail = process.env.SMTP_FROM_EMAIL || smtpUser || "no-reply@powertrack.local";
   const resendFromEmail = process.env.RESEND_FROM_EMAIL || fromEmail;
+  const sendgridFromEmail = process.env.SENDGRID_FROM_EMAIL || fromEmail;
+  const brevoFromEmail = process.env.BREVO_FROM_EMAIL || fromEmail;
   const fromName = process.env.SMTP_FROM_NAME || "PowerTrack";
 
   return {
@@ -35,8 +39,12 @@ function getEmailConfig() {
     smtpPass,
     smtpSecure,
     resendApiKey,
+    sendgridApiKey,
+    brevoApiKey,
     fromEmail,
     resendFromEmail,
+    sendgridFromEmail,
+    brevoFromEmail,
     fromName,
   };
 }
@@ -82,6 +90,82 @@ async function sendWithResend(config, message) {
     delivered: true,
     preview: false,
     provider: "resend",
+  };
+}
+
+async function sendWithSendGrid(config, message) {
+  const fetch = require("node-fetch");
+  const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.sendgridApiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      personalizations: [
+        {
+          to: [{ email: message.to }],
+        },
+      ],
+      from: {
+        email: config.sendgridFromEmail,
+        name: config.fromName,
+      },
+      subject: message.subject,
+      content: [
+        {
+          type: "text/plain",
+          value: message.text,
+        },
+        {
+          type: "text/html",
+          value: message.html,
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`SendGrid email failed (${response.status}): ${errorBody}`);
+  }
+
+  return {
+    delivered: true,
+    preview: false,
+    provider: "sendgrid",
+  };
+}
+
+async function sendWithBrevo(config, message) {
+  const fetch = require("node-fetch");
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "api-key": config.brevoApiKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      sender: {
+        email: config.brevoFromEmail,
+        name: config.fromName,
+      },
+      to: [{ email: message.to }],
+      subject: message.subject,
+      htmlContent: message.html,
+      textContent: message.text,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Brevo email failed (${response.status}): ${errorBody}`);
+  }
+
+  return {
+    delivered: true,
+    preview: false,
+    provider: "brevo",
   };
 }
 
@@ -143,12 +227,21 @@ async function sendVerificationOtpEmail({ to, name, otp }) {
   const message = { to, subject, html, text };
   const failures = [];
 
-  if (hasSmtpConfig(config)) {
+  if (config.sendgridApiKey) {
     try {
-      return await sendWithSmtp(config, message);
+      return await sendWithSendGrid(config, message);
     } catch (error) {
       failures.push(error.message);
-      console.error(`SMTP verification email failed for ${to}: ${error.message}`);
+      console.error(`SendGrid verification email failed for ${to}: ${error.message}`);
+    }
+  }
+
+  if (config.brevoApiKey) {
+    try {
+      return await sendWithBrevo(config, message);
+    } catch (error) {
+      failures.push(error.message);
+      console.error(`Brevo verification email failed for ${to}: ${error.message}`);
     }
   }
 
@@ -161,9 +254,18 @@ async function sendVerificationOtpEmail({ to, name, otp }) {
     }
   }
 
-  if (!config.resendApiKey && !hasSmtpConfig(config)) {
+  if (hasSmtpConfig(config) && process.env.EMAIL_DISABLE_SMTP !== "true") {
+    try {
+      return await sendWithSmtp(config, message);
+    } catch (error) {
+      failures.push(error.message);
+      console.error(`SMTP verification email failed for ${to}: ${error.message}`);
+    }
+  }
+
+  if (!config.sendgridApiKey && !config.brevoApiKey && !config.resendApiKey && (!hasSmtpConfig(config) || process.env.EMAIL_DISABLE_SMTP === "true")) {
     if (process.env.NODE_ENV === "production") {
-      failures.push("Email is not configured. Set RESEND_API_KEY or SMTP_HOST, SMTP_USER, and SMTP_PASS.");
+      failures.push("Email is not configured. Set SENDGRID_API_KEY, BREVO_API_KEY, RESEND_API_KEY, or SMTP_HOST, SMTP_USER, and SMTP_PASS.");
       throw new EmailDeliveryError(getPublicEmailError(failures), failures);
     }
 

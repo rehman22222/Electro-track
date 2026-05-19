@@ -90,30 +90,11 @@ async function persistAndSendVerificationOtp(user) {
   user.emailVerificationOtpSentAt = new Date();
   await user.save();
 
-  try {
-    const emailDispatch = await sendVerificationOtpEmail({
-      to: user.email,
-      name: user.username,
-      otp,
-    });
-
-    return {
-      ...emailDispatch,
-      otpDelivery: "email",
-    };
-  } catch (err) {
-    if (err instanceof EmailDeliveryError || err.name === "EmailDeliveryError") {
-      console.error(`Verification email delivery failed for ${user.email}; using on-screen OTP fallback.`);
-      return {
-        delivered: false,
-        preview: true,
-        otpDelivery: "screen",
-        devOtpPreview: otp,
-      };
-    }
-
-    throw err;
-  }
+  return sendVerificationOtpEmail({
+    to: user.email,
+    name: user.username,
+    otp,
+  });
 }
 
 function handleAuthRouteError(res, err) {
@@ -247,15 +228,11 @@ router.post("/register", async (req, res) => {
     }
 
     const emailDispatch = await persistAndSendVerificationOtp(user);
-    const usedScreenFallback = emailDispatch.otpDelivery === "screen";
 
     return res.status(201).json({
-      message: usedScreenFallback
-        ? "Email delivery is temporarily unavailable. Use the verification code shown on this screen."
-        : "Verification code sent to your email",
+      message: "Verification code sent to your email",
       requiresVerification: true,
       email: user.email,
-      otpDelivery: emailDispatch.otpDelivery,
       ...(emailDispatch.devOtpPreview ? { devOtpPreview: emailDispatch.devOtpPreview } : {}),
     });
   } catch (err) {
@@ -340,13 +317,9 @@ router.post("/resend-email-otp", async (req, res) => {
     }
 
     const emailDispatch = await persistAndSendVerificationOtp(user);
-    const usedScreenFallback = emailDispatch.otpDelivery === "screen";
 
     return res.json({
-      message: usedScreenFallback
-        ? "Email delivery is temporarily unavailable. Use the new verification code shown on this screen."
-        : "A new verification code has been sent",
-      otpDelivery: emailDispatch.otpDelivery,
+      message: "A new verification code has been sent",
       ...(emailDispatch.devOtpPreview ? { devOtpPreview: emailDispatch.devOtpPreview } : {}),
     });
   } catch (err) {
