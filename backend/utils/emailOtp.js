@@ -2,6 +2,7 @@ const crypto = require("crypto");
 
 const DEFAULT_EMAIL_PROVIDER_ORDER = ["smtp", "gmail-api", "sendgrid", "resend", "brevo", "brevo-smtp"];
 const SUPPORTED_EMAIL_PROVIDERS = new Set(DEFAULT_EMAIL_PROVIDER_ORDER);
+const FALLBACK_ENABLED_VALUES = new Set(["1", "true", "yes"]);
 
 class EmailDeliveryError extends Error {
   constructor(message, details = []) {
@@ -20,13 +21,25 @@ function hashOtp(code) {
   return crypto.createHash("sha256").update(String(code)).digest("hex");
 }
 
+function maskEmailAddress(value) {
+  const [localPart, domain] = String(value || "").split("@");
+  if (!localPart || !domain) return null;
+
+  return `${localPart.slice(0, 2)}***@${domain}`;
+}
+
 function getEmailConfig() {
+  const requiredProvider = getRequiredEmailProvider();
   const smtpHost = process.env.SMTP_HOST;
   const smtpPort = Number(process.env.SMTP_PORT || 587);
   const smtpUser = process.env.SMTP_USER;
   const smtpPass = String(process.env.SMTP_PASS || "").replace(/\s+/g, "");
   const smtpSecure = String(process.env.SMTP_SECURE || "false").toLowerCase() === "true";
-  const smtpDisabled = String(process.env.EMAIL_DISABLE_SMTP || "false").toLowerCase() === "true";
+  const smtpDisabled =
+    String(process.env.EMAIL_DISABLE_SMTP || "false").toLowerCase() === "true" && requiredProvider !== "smtp";
+  const allowProviderFallbacks = FALLBACK_ENABLED_VALUES.has(
+    String(process.env.EMAIL_ALLOW_PROVIDER_FALLBACKS || "").toLowerCase()
+  );
   const resendApiKey = String(process.env.RESEND_API_KEY || "").trim();
   const sendgridApiKey = String(process.env.SENDGRID_API_KEY || "").trim();
   const brevoApiKey = String(process.env.BREVO_API_KEY || "").trim();
@@ -65,8 +78,18 @@ function getEmailConfig() {
     sendgridFromEmail,
     brevoFromEmail,
     fromName,
+    requiredProvider,
+    allowProviderFallbacks,
     providerOrder: getEmailProviderOrder(),
   };
+}
+
+function getRequiredEmailProvider() {
+  const provider = String(process.env.EMAIL_REQUIRED_PROVIDER || process.env.EMAIL_PRIMARY_PROVIDER || "")
+    .trim()
+    .toLowerCase();
+
+  return SUPPORTED_EMAIL_PROVIDERS.has(provider) ? provider : null;
 }
 
 function getEmailProviderOrder() {
@@ -132,6 +155,47 @@ function getProviderLogName(provider) {
     brevo: "Brevo",
     "brevo-smtp": "Brevo SMTP",
   }[provider] || provider;
+}
+
+function getMissingProviderConfigMessage(provider) {
+  switch (provider) {
+    case "smtp":
+      return "SMTP is required for OTP email, but SMTP_HOST, SMTP_USER, or SMTP_PASS is missing.";
+    case "gmail-api":
+      return "Gmail API is required for OTP email, but GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, or GMAIL_FROM_EMAIL is missing.";
+    case "sendgrid":
+      return "SendGrid is required for OTP email, but SENDGRID_API_KEY is missing.";
+    case "resend":
+      return "Resend is required for OTP email, but RESEND_API_KEY is missing.";
+    case "brevo":
+      return "Brevo API is required for OTP email, but BREVO_API_KEY is missing.";
+    case "brevo-smtp":
+      return "Brevo SMTP is required for OTP email, but BREVO_SMTP_LOGIN or BREVO_SMTP_KEY is missing.";
+    default:
+      return "Required email provider is not configured.";
+  }
+}
+
+function getEmailDiagnostics() {
+  const config = getEmailConfig();
+
+  return {
+    requiredProvider: config.requiredProvider,
+    allowProviderFallbacks: config.allowProviderFallbacks,
+    providerOrder: config.providerOrder,
+    providers: Object.fromEntries(
+      DEFAULT_EMAIL_PROVIDER_ORDER.map((provider) => [provider, canUseEmailProvider(provider, config)])
+    ),
+    smtp: {
+      configured: hasSmtpConfig(config),
+      disabled: config.smtpDisabled,
+      host: config.smtpHost || null,
+      port: config.smtpPort,
+      secure: config.smtpSecure,
+      user: maskEmailAddress(config.smtpUser),
+      fromEmail: maskEmailAddress(config.fromEmail),
+    },
+  };
 }
 
 async function sendWithEmailProvider(provider, config, message) {
@@ -525,8 +589,16 @@ async function sendEmailMessage(message) {
   const config = getEmailConfig();
   const failures = [];
   let attemptedProvider = false;
+  const providerOrder = config.requiredProvider
+    ? [config.requiredProvider, ...config.providerOrder.filter((provider) => provider !== config.requiredProvider)]
+    : config.providerOrder;
 
-  for (const provider of config.providerOrder) {
+  if (config.requiredProvider && !canUseEmailProvider(config.requiredProvider, config)) {
+    failures.push(getMissingProviderConfigMessage(config.requiredProvider));
+    throw new EmailDeliveryError(getPublicEmailError(failures), failures);
+  }
+
+  for (const provider of providerOrder) {
     if (!canUseEmailProvider(provider, config)) {
       continue;
     }
@@ -537,6 +609,10 @@ async function sendEmailMessage(message) {
     } catch (error) {
       failures.push(error.message);
       console.error(`${getProviderLogName(provider)} email failed for ${message.to}: ${error.message}`);
+
+      if (config.requiredProvider === provider && !config.allowProviderFallbacks) {
+        throw new EmailDeliveryError(getPublicEmailError(failures), failures);
+      }
     }
   }
 
@@ -607,6 +683,7 @@ async function sendEmailDeliveryTest({ to }) {
 module.exports = {
   EmailDeliveryError,
   createOtpCode,
+  getEmailDiagnostics,
   hashOtp,
   sendEmailDeliveryTest,
   sendVerificationOtpEmail,

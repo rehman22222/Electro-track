@@ -3,13 +3,17 @@ const express = require("express");
 const auth = require("../middleware/auth");
 const requireRole = require("../middleware/requireRole");
 const adminController = require("../controllers/adminController");
-const { EmailDeliveryError, sendEmailDeliveryTest } = require("../utils/emailOtp");
+const { EmailDeliveryError, getEmailDiagnostics, sendEmailDeliveryTest } = require("../utils/emailOtp");
 
 const router = express.Router();
 
 router.use(auth, requireRole("admin"));
 
 router.get("/analytics", adminController.getAnalytics);
+
+router.get("/email-status", (req, res) => {
+  return res.json(getEmailDiagnostics());
+});
 
 router.post("/email-test", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
