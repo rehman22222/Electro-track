@@ -31,11 +31,11 @@ services:
       - key: SMTP_FROM_NAME
         value: PowerTrack
       - key: EMAIL_REQUIRED_PROVIDER
-        value: smtp
+        value: gmail-api
       - key: EMAIL_ALLOW_PROVIDER_FALLBACKS
         value: false
       - key: EMAIL_PROVIDER_ORDER
-        value: smtp,gmail-api,sendgrid,resend,brevo,brevo-smtp
+        value: gmail-api,resend,sendgrid,brevo,smtp,brevo-smtp
       - key: GMAIL_CLIENT_ID
         sync: false
       - key: GMAIL_CLIENT_SECRET

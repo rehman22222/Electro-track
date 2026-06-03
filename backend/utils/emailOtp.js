@@ -1,6 +1,6 @@
 const crypto = require("crypto");
 
-const DEFAULT_EMAIL_PROVIDER_ORDER = ["smtp", "gmail-api", "sendgrid", "resend", "brevo", "brevo-smtp"];
+const DEFAULT_EMAIL_PROVIDER_ORDER = ["gmail-api", "resend", "sendgrid", "brevo", "smtp", "brevo-smtp"];
 const SUPPORTED_EMAIL_PROVIDERS = new Set(DEFAULT_EMAIL_PROVIDER_ORDER);
 const FALLBACK_ENABLED_VALUES = new Set(["1", "true", "yes"]);
 
@@ -89,7 +89,25 @@ function getRequiredEmailProvider() {
     .trim()
     .toLowerCase();
 
-  return SUPPORTED_EMAIL_PROVIDERS.has(provider) ? provider : null;
+  if (SUPPORTED_EMAIL_PROVIDERS.has(provider)) {
+    return provider;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    if (process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET && process.env.GMAIL_REFRESH_TOKEN) {
+      return "gmail-api";
+    }
+
+    if (process.env.RESEND_API_KEY) {
+      return "resend";
+    }
+
+    if (process.env.SENDGRID_API_KEY) {
+      return "sendgrid";
+    }
+  }
+
+  return null;
 }
 
 function getEmailProviderOrder() {
@@ -113,6 +131,11 @@ function getEmailProviderOrder() {
   });
 
   return providerOrder.length ? providerOrder : DEFAULT_EMAIL_PROVIDER_ORDER;
+}
+
+function normalizeEmailProvider(value) {
+  const provider = String(value || "").trim().toLowerCase();
+  return SUPPORTED_EMAIL_PROVIDERS.has(provider) ? provider : null;
 }
 
 function hasSmtpConfig(config) {
@@ -589,12 +612,15 @@ async function sendEmailMessage(message) {
   const config = getEmailConfig();
   const failures = [];
   let attemptedProvider = false;
-  const providerOrder = config.requiredProvider
-    ? [config.requiredProvider, ...config.providerOrder.filter((provider) => provider !== config.requiredProvider)]
+  const forcedProvider = normalizeEmailProvider(message.provider);
+  const requiredProvider = forcedProvider || config.requiredProvider;
+  const allowProviderFallbacks = forcedProvider ? false : config.allowProviderFallbacks;
+  const providerOrder = requiredProvider
+    ? [requiredProvider, ...config.providerOrder.filter((provider) => provider !== requiredProvider)]
     : config.providerOrder;
 
-  if (config.requiredProvider && !canUseEmailProvider(config.requiredProvider, config)) {
-    failures.push(getMissingProviderConfigMessage(config.requiredProvider));
+  if (requiredProvider && !canUseEmailProvider(requiredProvider, config)) {
+    failures.push(getMissingProviderConfigMessage(requiredProvider));
     throw new EmailDeliveryError(getPublicEmailError(failures), failures);
   }
 
@@ -610,7 +636,7 @@ async function sendEmailMessage(message) {
       failures.push(error.message);
       console.error(`${getProviderLogName(provider)} email failed for ${message.to}: ${error.message}`);
 
-      if (config.requiredProvider === provider && !config.allowProviderFallbacks) {
+      if (requiredProvider === provider && !allowProviderFallbacks) {
         throw new EmailDeliveryError(getPublicEmailError(failures), failures);
       }
     }
@@ -666,7 +692,7 @@ async function sendVerificationOtpEmail({ to, name, otp }) {
   });
 }
 
-async function sendEmailDeliveryTest({ to }) {
+async function sendEmailDeliveryTest({ to, provider }) {
   const subject = "PowerTrack email delivery test";
   const text = "This is a PowerTrack email delivery test. If you received it, transactional email delivery is working.";
   const html = `
@@ -677,7 +703,7 @@ async function sendEmailDeliveryTest({ to }) {
     </div>
   `;
 
-  return sendEmailMessage({ to, subject, html, text, headers: createEmailHeaders() });
+  return sendEmailMessage({ to, provider, subject, html, text, headers: createEmailHeaders() });
 }
 
 module.exports = {
