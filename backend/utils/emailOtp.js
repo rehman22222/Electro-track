@@ -1,5 +1,8 @@
 const crypto = require("crypto");
 
+const DEFAULT_EMAIL_PROVIDER_ORDER = ["smtp", "gmail-api", "sendgrid", "resend", "brevo", "brevo-smtp"];
+const SUPPORTED_EMAIL_PROVIDERS = new Set(DEFAULT_EMAIL_PROVIDER_ORDER);
+
 class EmailDeliveryError extends Error {
   constructor(message, details = []) {
     super(message);
@@ -23,6 +26,7 @@ function getEmailConfig() {
   const smtpUser = process.env.SMTP_USER;
   const smtpPass = String(process.env.SMTP_PASS || "").replace(/\s+/g, "");
   const smtpSecure = String(process.env.SMTP_SECURE || "false").toLowerCase() === "true";
+  const smtpDisabled = String(process.env.EMAIL_DISABLE_SMTP || "false").toLowerCase() === "true";
   const resendApiKey = String(process.env.RESEND_API_KEY || "").trim();
   const sendgridApiKey = String(process.env.SENDGRID_API_KEY || "").trim();
   const brevoApiKey = String(process.env.BREVO_API_KEY || "").trim();
@@ -45,6 +49,7 @@ function getEmailConfig() {
     smtpUser,
     smtpPass,
     smtpSecure,
+    smtpDisabled,
     resendApiKey,
     sendgridApiKey,
     brevoApiKey,
@@ -60,7 +65,31 @@ function getEmailConfig() {
     sendgridFromEmail,
     brevoFromEmail,
     fromName,
+    providerOrder: getEmailProviderOrder(),
   };
+}
+
+function getEmailProviderOrder() {
+  const configured = String(process.env.EMAIL_PROVIDER_ORDER || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (!configured.length) {
+    return DEFAULT_EMAIL_PROVIDER_ORDER;
+  }
+
+  const seen = new Set();
+  const providerOrder = configured.filter((provider) => {
+    if (!SUPPORTED_EMAIL_PROVIDERS.has(provider) || seen.has(provider)) {
+      return false;
+    }
+
+    seen.add(provider);
+    return true;
+  });
+
+  return providerOrder.length ? providerOrder : DEFAULT_EMAIL_PROVIDER_ORDER;
 }
 
 function hasSmtpConfig(config) {
@@ -73,6 +102,55 @@ function hasBrevoSmtpConfig(config) {
 
 function hasGmailApiConfig(config) {
   return Boolean(config.gmailClientId && config.gmailClientSecret && config.gmailRefreshToken && config.gmailFromEmail);
+}
+
+function canUseEmailProvider(provider, config) {
+  switch (provider) {
+    case "gmail-api":
+      return hasGmailApiConfig(config);
+    case "smtp":
+      return hasSmtpConfig(config) && !config.smtpDisabled;
+    case "sendgrid":
+      return Boolean(config.sendgridApiKey);
+    case "resend":
+      return Boolean(config.resendApiKey);
+    case "brevo":
+      return Boolean(config.brevoApiKey);
+    case "brevo-smtp":
+      return hasBrevoSmtpConfig(config);
+    default:
+      return false;
+  }
+}
+
+function getProviderLogName(provider) {
+  return {
+    "gmail-api": "Gmail API",
+    smtp: "SMTP",
+    sendgrid: "SendGrid",
+    resend: "Resend",
+    brevo: "Brevo",
+    "brevo-smtp": "Brevo SMTP",
+  }[provider] || provider;
+}
+
+async function sendWithEmailProvider(provider, config, message) {
+  switch (provider) {
+    case "gmail-api":
+      return sendWithGmailApi(config, message);
+    case "smtp":
+      return sendWithSmtp(config, message);
+    case "sendgrid":
+      return sendWithSendGrid(config, message);
+    case "resend":
+      return sendWithResend(config, message);
+    case "brevo":
+      return sendWithBrevo(config, message);
+    case "brevo-smtp":
+      return sendWithBrevoSmtp(config, message);
+    default:
+      throw new Error(`Unsupported email provider: ${provider}`);
+  }
 }
 
 function getPublicEmailError(details = []) {
@@ -446,64 +524,25 @@ async function sendWithSmtp(config, message) {
 async function sendEmailMessage(message) {
   const config = getEmailConfig();
   const failures = [];
+  let attemptedProvider = false;
 
-  if (hasGmailApiConfig(config)) {
+  for (const provider of config.providerOrder) {
+    if (!canUseEmailProvider(provider, config)) {
+      continue;
+    }
+
+    attemptedProvider = true;
     try {
-      return await sendWithGmailApi(config, message);
+      return await sendWithEmailProvider(provider, config, message);
     } catch (error) {
       failures.push(error.message);
-      console.error(`Gmail API email failed for ${message.to}: ${error.message}`);
+      console.error(`${getProviderLogName(provider)} email failed for ${message.to}: ${error.message}`);
     }
   }
 
-  if (config.sendgridApiKey) {
-    try {
-      return await sendWithSendGrid(config, message);
-    } catch (error) {
-      failures.push(error.message);
-      console.error(`SendGrid email failed for ${message.to}: ${error.message}`);
-    }
-  }
-
-  if (hasBrevoSmtpConfig(config)) {
-    try {
-      return await sendWithBrevoSmtp(config, message);
-    } catch (error) {
-      failures.push(error.message);
-      console.error(`Brevo SMTP email failed for ${message.to}: ${error.message}`);
-    }
-  }
-
-  if (config.brevoApiKey) {
-    try {
-      return await sendWithBrevo(config, message);
-    } catch (error) {
-      failures.push(error.message);
-      console.error(`Brevo email failed for ${message.to}: ${error.message}`);
-    }
-  }
-
-  if (config.resendApiKey) {
-    try {
-      return await sendWithResend(config, message);
-    } catch (error) {
-      failures.push(error.message);
-      console.error(`Resend email failed for ${message.to}: ${error.message}`);
-    }
-  }
-
-  if (hasSmtpConfig(config) && process.env.EMAIL_DISABLE_SMTP !== "true") {
-    try {
-      return await sendWithSmtp(config, message);
-    } catch (error) {
-      failures.push(error.message);
-      console.error(`SMTP email failed for ${message.to}: ${error.message}`);
-    }
-  }
-
-  if (!hasGmailApiConfig(config) && !config.sendgridApiKey && !config.brevoApiKey && !hasBrevoSmtpConfig(config) && !config.resendApiKey && (!hasSmtpConfig(config) || process.env.EMAIL_DISABLE_SMTP === "true")) {
+  if (!attemptedProvider) {
     if (process.env.NODE_ENV === "production") {
-      failures.push("Email is not configured. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN; or SENDGRID_API_KEY, BREVO_API_KEY, BREVO_SMTP_LOGIN and BREVO_SMTP_KEY, RESEND_API_KEY, or SMTP_HOST, SMTP_USER, and SMTP_PASS.");
+      failures.push("Email is not configured. Set SMTP_HOST, SMTP_USER, and SMTP_PASS; or GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN; or SENDGRID_API_KEY, BREVO_API_KEY, BREVO_SMTP_LOGIN and BREVO_SMTP_KEY, or RESEND_API_KEY.");
       throw new EmailDeliveryError(getPublicEmailError(failures), failures);
     }
 

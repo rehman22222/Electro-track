@@ -30,6 +30,8 @@ services:
         value: powertracksmart@gmail.com
       - key: SMTP_FROM_NAME
         value: PowerTrack
+      - key: EMAIL_PROVIDER_ORDER
+        value: smtp,gmail-api,sendgrid,resend,brevo,brevo-smtp
       - key: GMAIL_CLIENT_ID
         sync: false
       - key: GMAIL_CLIENT_SECRET
