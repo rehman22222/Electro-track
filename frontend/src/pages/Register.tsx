@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
@@ -23,8 +23,24 @@ type RegisterFormState = {
 
 type PendingVerificationState = {
   email: string;
+  sentAt?: string;
+  deliveryProvider?: string;
   devOtpPreview?: string;
 };
+
+const RESEND_COOLDOWN_SECONDS = 60;
+
+function formatSentTime(value?: string) {
+  if (!value) return null;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return date.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 export default function Register() {
   const navigate = useNavigate();
@@ -38,6 +54,31 @@ export default function Register() {
   });
   const [otp, setOtp] = useState('');
   const [pendingVerification, setPendingVerification] = useState<PendingVerificationState | null>(null);
+  const [resendAvailableAt, setResendAvailableAt] = useState(0);
+  const [now, setNow] = useState(Date.now());
+
+  const resendSecondsRemaining = Math.max(0, Math.ceil((resendAvailableAt - now) / 1000));
+  const sentTime = formatSentTime(pendingVerification?.sentAt);
+
+  useEffect(() => {
+    if (!resendAvailableAt) return;
+
+    const updateCountdown = () => {
+      const currentTime = Date.now();
+      setNow(currentTime);
+
+      if (currentTime >= resendAvailableAt) {
+        setResendAvailableAt(0);
+      }
+    };
+
+    updateCountdown();
+    const intervalId = window.setInterval(() => {
+      updateCountdown();
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [resendAvailableAt]);
 
   const registerMutation = useMutation({
     mutationFn: authService.register,
@@ -45,8 +86,11 @@ export default function Register() {
       if ('requiresVerification' in data && data.requiresVerification) {
         setPendingVerification({
           email: data.email,
+          sentAt: data.sentAt,
+          deliveryProvider: data.deliveryProvider,
           devOtpPreview: data.devOtpPreview,
         });
+        setResendAvailableAt(Date.now() + RESEND_COOLDOWN_SECONDS * 1000);
         setOtp('');
         toast.success('Verification code sent to your email.');
         return;
@@ -82,10 +126,13 @@ export default function Register() {
         current
           ? {
               ...current,
+              sentAt: data.sentAt,
+              deliveryProvider: data.deliveryProvider,
               devOtpPreview: data.devOtpPreview,
             }
           : current
       );
+      setResendAvailableAt(Date.now() + RESEND_COOLDOWN_SECONDS * 1000);
       setOtp('');
       toast.success(data.message || 'A new code has been sent.');
     },
@@ -262,6 +309,15 @@ export default function Register() {
                 <form onSubmit={handleVerifySubmit} className="space-y-5">
                   <div className="rounded-lg border border-border bg-secondary/40 p-4 text-sm text-muted-foreground">
                     Check your inbox for the verification code. It expires in 10 minutes.
+                    {sentTime && (
+                      <p className="mt-3">
+                        Latest email accepted at {sentTime}
+                        {pendingVerification.deliveryProvider ? ` via ${pendingVerification.deliveryProvider}` : ''}.
+                      </p>
+                    )}
+                    <p className="mt-3">
+                      If it is not visible, check Spam, Promotions, or use Edit details with a different email address.
+                    </p>
                     {import.meta.env.DEV && pendingVerification.devOtpPreview && (
                       <p className="mt-3 text-primary">
                         Dev preview code: <span className="font-semibold">{pendingVerification.devOtpPreview}</span>
@@ -310,10 +366,18 @@ export default function Register() {
                       type="button"
                       variant="outline"
                       className="h-11 flex-1"
-                      disabled={resendMutation.isPending}
-                      onClick={() => resendMutation.mutate(pendingVerification.email)}
+                      disabled={resendMutation.isPending || resendSecondsRemaining > 0}
+                      onClick={() => {
+                        if (resendSecondsRemaining === 0) {
+                          resendMutation.mutate(pendingVerification.email);
+                        }
+                      }}
                     >
-                      {resendMutation.isPending ? 'Resending...' : 'Resend code'}
+                      {resendMutation.isPending
+                        ? 'Resending...'
+                        : resendSecondsRemaining > 0
+                          ? `Resend in ${resendSecondsRemaining}s`
+                          : 'Resend code'}
                     </Button>
                     <Button
                       type="button"

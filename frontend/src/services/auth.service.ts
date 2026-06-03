@@ -22,6 +22,8 @@ export interface VerificationPendingResponse {
   requiresVerification: true;
   email: string;
   message: string;
+  sentAt?: string;
+  deliveryProvider?: string;
   devOtpPreview?: string;
 }
 

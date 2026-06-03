@@ -248,6 +248,8 @@ router.post("/register", async (req, res) => {
       message: "Verification code sent to your email",
       requiresVerification: true,
       email: user.email,
+      sentAt: user.emailVerificationOtpSentAt,
+      deliveryProvider: emailDispatch.provider,
       ...(emailDispatch.devOtpPreview ? { devOtpPreview: emailDispatch.devOtpPreview } : {}),
     });
   } catch (err) {
@@ -335,6 +337,10 @@ router.post("/resend-email-otp", async (req, res) => {
 
     return res.json({
       message: "A new verification code has been sent",
+      requiresVerification: true,
+      email: user.email,
+      sentAt: user.emailVerificationOtpSentAt,
+      deliveryProvider: emailDispatch.provider,
       ...(emailDispatch.devOtpPreview ? { devOtpPreview: emailDispatch.devOtpPreview } : {}),
     });
   } catch (err) {

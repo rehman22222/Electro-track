@@ -121,6 +121,7 @@ function encodeBase64Url(value) {
 
 function createMimeMessage({ fromName, fromEmail, to, subject, text, html }) {
   const boundary = `powertrack-${crypto.randomBytes(12).toString("hex")}`;
+  const entityRefId = `powertrack-${crypto.randomBytes(16).toString("hex")}`;
   const fromLabel = encodeMimeHeader(fromName);
   const cleanFromEmail = encodeMimeHeader(fromEmail);
   const cleanTo = encodeMimeHeader(to);
@@ -130,6 +131,11 @@ function createMimeMessage({ fromName, fromEmail, to, subject, text, html }) {
     `From: ${fromLabel ? `"${fromLabel}" ` : ""}<${cleanFromEmail}>`,
     `To: ${cleanTo}`,
     `Subject: ${cleanSubject}`,
+    `Reply-To: ${cleanFromEmail}`,
+    `X-Entity-Ref-ID: ${entityRefId}`,
+    "X-Auto-Response-Suppress: All",
+    "X-Priority: 1",
+    "Importance: high",
     "MIME-Version: 1.0",
     `Content-Type: multipart/alternative; boundary="${boundary}"`,
     "",
@@ -148,6 +154,15 @@ function createMimeMessage({ fromName, fromEmail, to, subject, text, html }) {
     `--${boundary}--`,
     "",
   ].join("\r\n");
+}
+
+function createEmailHeaders() {
+  return {
+    "X-Entity-Ref-ID": `powertrack-${crypto.randomBytes(16).toString("hex")}`,
+    "X-Auto-Response-Suppress": "All",
+    "X-Priority": "1",
+    Importance: "high",
+  };
 }
 
 async function getGmailAccessToken(config) {
@@ -225,6 +240,8 @@ async function sendWithResend(config, message) {
       subject: message.subject,
       html: message.html,
       text: message.text,
+      reply_to: config.resendFromEmail,
+      headers: message.headers,
     }),
   });
 
@@ -254,9 +271,14 @@ async function sendWithSendGrid(config, message) {
       personalizations: [
         {
           to: [{ email: message.to }],
+          headers: message.headers,
         },
       ],
       from: {
+        email: config.sendgridFromEmail,
+        name: config.fromName,
+      },
+      reply_to: {
         email: config.sendgridFromEmail,
         name: config.fromName,
       },
@@ -300,10 +322,15 @@ async function sendWithBrevo(config, message) {
         email: config.brevoFromEmail,
         name: config.fromName,
       },
+      replyTo: {
+        email: config.brevoFromEmail,
+        name: config.fromName,
+      },
       to: [{ email: message.to }],
       subject: message.subject,
       htmlContent: message.html,
       textContent: message.text,
+      headers: message.headers,
     }),
   });
 
@@ -345,10 +372,13 @@ async function sendWithBrevoSmtp(config, message) {
 
   const info = await transporter.sendMail({
     from: `"${config.fromName}" <${config.brevoFromEmail}>`,
+    replyTo: config.brevoFromEmail,
     to: message.to,
     subject: message.subject,
     html: message.html,
     text: message.text,
+    headers: message.headers,
+    priority: "high",
   });
   assertSmtpAccepted(info, "Brevo SMTP");
 
@@ -388,10 +418,17 @@ async function sendWithSmtp(config, message) {
 
   const info = await transporter.sendMail({
     from: `"${config.fromName}" <${config.fromEmail}>`,
+    replyTo: config.fromEmail,
     to: message.to,
     subject: message.subject,
     html: message.html,
     text: message.text,
+    headers: message.headers,
+    priority: "high",
+    envelope: {
+      from: config.fromEmail,
+      to: [message.to],
+    },
   });
   assertSmtpAccepted(info, "SMTP");
 
@@ -482,10 +519,17 @@ async function sendEmailMessage(message) {
 }
 
 async function sendVerificationOtpEmail({ to, name, otp }) {
-  const subject = "Your PowerTrack verification code";
-  const text = `Your PowerTrack verification code is ${otp}. It expires in 10 minutes.`;
+  const subject = `${otp} is your PowerTrack verification code`;
+  const text = [
+    `Your PowerTrack verification code is ${otp}.`,
+    "It expires in 10 minutes.",
+    "If you did not request this account, you can ignore this email.",
+  ].join("\n");
   const html = `
     <div style="font-family: Arial, sans-serif; color: #111827; line-height: 1.6;">
+      <div style="display: none; max-height: 0; overflow: hidden; opacity: 0;">
+        Your PowerTrack verification code is ${otp}. It expires in 10 minutes.
+      </div>
       <h2 style="margin-bottom: 8px;">Verify your email</h2>
       <p>Hello ${name || "there"},</p>
       <p>Use the verification code below to finish creating your PowerTrack account:</p>
@@ -502,6 +546,7 @@ async function sendVerificationOtpEmail({ to, name, otp }) {
     subject,
     html,
     text,
+    headers: createEmailHeaders(),
     devOtpPreview: process.env.NODE_ENV === "production" ? undefined : otp,
   });
 }
@@ -517,7 +562,7 @@ async function sendEmailDeliveryTest({ to }) {
     </div>
   `;
 
-  return sendEmailMessage({ to, subject, html, text });
+  return sendEmailMessage({ to, subject, html, text, headers: createEmailHeaders() });
 }
 
 module.exports = {
